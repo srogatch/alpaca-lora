@@ -41,10 +41,7 @@ def train(
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.05,
-    lora_target_modules: List[str] = [
-        "q_proj",
-        "v_proj",
-    ],
+    lora_target_modules=None,
     # llm hyperparams
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
@@ -56,6 +53,11 @@ def train(
     resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
     prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
 ):
+    if lora_target_modules is None:
+        lora_target_modules = [
+            "q_proj",
+            "v_proj",
+        ]
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         print(
             f"Training Alpaca-LoRA model with params:\n"
@@ -92,7 +94,13 @@ def train(
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     ddp = world_size != 1
     if ddp:
-        device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
+        local_rank = int(os.environ.get("LOCAL_RANK") or 0)
+        if local_rank < torch.cuda.device_count():
+            device = local_rank
+        else:
+            assert local_rank == torch.cuda.device_count()
+            device = 'cpu'
+        device_map = {"": device}
         gradient_accumulation_steps = gradient_accumulation_steps // world_size
 
     # Check if parameter passed or if set within environ
@@ -246,6 +254,9 @@ def train(
             group_by_length=group_by_length,
             report_to="wandb" if use_wandb else None,
             run_name=wandb_run_name if use_wandb else None,
+            no_cuda=(device == 'cpu'),
+            use_ipex=(device == 'cpu'),
+            xpu_backend=('gloo' if device == 'cpu' else None),
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
